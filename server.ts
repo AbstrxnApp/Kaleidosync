@@ -13,6 +13,9 @@ async function startServer() {
   
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+  // In-memory storage for room canvas state
+  const roomsState = new Map<string, { strokeOrder: string[], strokes: Record<string, any[]> }>();
+
   // Real-time synchronization
   io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);
@@ -21,12 +24,29 @@ async function startServer() {
     socket.on("join-room", (roomId) => {
       socket.join(roomId);
       console.log(`Socket ${socket.id} joined room ${roomId}`);
+      
+      // Send existing canvas state to the newly joined client
+      if (roomsState.has(roomId)) {
+        socket.emit("sync", roomsState.get(roomId));
+      }
+
       const room = io.sockets.adapter.rooms.get(roomId);
       io.to(roomId).emit("user-count", room ? room.size : 0);
     });
 
     // Synchronize drawing events
     socket.on("draw", (data) => {
+      // Save state
+      if (!roomsState.has(data.roomId)) {
+        roomsState.set(data.roomId, { strokeOrder: [], strokes: {} });
+      }
+      const roomState = roomsState.get(data.roomId)!;
+      if (!roomState.strokes[data.strokeId]) {
+        roomState.strokes[data.strokeId] = [];
+        roomState.strokeOrder.push(data.strokeId);
+      }
+      roomState.strokes[data.strokeId].push(data);
+
       // Broadcast to other clients in the same room
       socket.to(data.roomId).emit("draw", data);
     });
@@ -36,10 +56,17 @@ async function startServer() {
     });
 
     socket.on("undo", (data) => {
+      // Remove from server state
+      const roomState = roomsState.get(data.roomId);
+      if (roomState) {
+        delete roomState.strokes[data.strokeId];
+        roomState.strokeOrder = roomState.strokeOrder.filter(id => id !== data.strokeId);
+      }
       socket.to(data.roomId).emit("undo", data);
     });
 
     socket.on("clear", (roomId) => {
+      roomsState.delete(roomId);
       socket.to(roomId).emit("clear");
     });
 
