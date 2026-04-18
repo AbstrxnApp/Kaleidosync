@@ -93,8 +93,11 @@ export default function App() {
     });
 
     socket.on("sync", (data: { strokeOrder: string[], strokes: Record<string, DrawSegment[]> }) => {
+      console.log("SYNC RECEIVED on Client!", data);
       strokeOrderRef.current = data.strokeOrder;
       strokesMapRef.current = new Map(Object.entries(data.strokes));
+      
+      console.log("Attempting to redraw. Source ref:", sourceCanvasRef.current ? "Exists" : "Missing");
       redrawAllStrokes();
     });
 
@@ -347,17 +350,25 @@ export default function App() {
   };
 
   const drawSegmentOnCtx = (ctx: CanvasRenderingContext2D, seg: DrawSegment) => {
+    const scx = ctx.canvas.width / 2;
+    const scy = ctx.canvas.height / 2;
+    
+    const x0 = scx + seg.x0;
+    const y0 = scy + seg.y0;
+    const x1 = scx + seg.x1;
+    const y1 = scy + seg.y1;
+
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(seg.x0, seg.y0);
-    ctx.lineTo(seg.x1, seg.y1);
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
     
     if (seg.effect === 'neon') {
       ctx.shadowBlur = seg.lineWidth * 2.5;
       ctx.shadowColor = seg.color;
       ctx.strokeStyle = '#ffffff'; 
     } else if (seg.effect === 'gradient') {
-      const grad = ctx.createLinearGradient(seg.x0, seg.y0, seg.x1, seg.y1);
+      const grad = ctx.createLinearGradient(x0, y0, x1, y1);
       grad.addColorStop(0, seg.color);
       grad.addColorStop(1, '#ffffff');
       ctx.strokeStyle = grad;
@@ -371,8 +382,8 @@ export default function App() {
     ctx.stroke();
 
     if (seg.effect === 'glitter') {
-      const dx = seg.x1 - seg.x0;
-      const dy = seg.y1 - seg.y0;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
       const dist = Math.hypot(dx, dy);
       const steps = Math.max(1, Math.floor(dist / Math.max(2, seg.lineWidth * 0.5)));
       
@@ -382,8 +393,8 @@ export default function App() {
          const pseudoRandomX = Math.abs(Math.sin((seg.x0 + i) * 12.9898 + (seg.y0 + i) * 78.233)) % 1;
          const pseudoRandomY = Math.abs(Math.sin((seg.x0 + i) * 78.233 + (seg.y0 + i) * 12.9898)) % 1;
          
-         const x = seg.x0 + dx * t + (pseudoRandomX - 0.5) * seg.lineWidth * 3;
-         const y = seg.y0 + dy * t + (pseudoRandomY - 0.5) * seg.lineWidth * 3;
+         const x = x0 + dx * t + (pseudoRandomX - 0.5) * seg.lineWidth * 3;
+         const y = y0 + dy * t + (pseudoRandomY - 0.5) * seg.lineWidth * 3;
          const s = pseudoRandomX * (seg.lineWidth * 0.6) + 0.5;
          
          ctx.beginPath();
@@ -475,12 +486,9 @@ export default function App() {
       thetaWedge = sliceAngle - thetaWedge;
     }
     
-    const sourceCanvas = sourceCanvasRef.current;
-    const scx = sourceCanvas ? sourceCanvas.width / 2 : cx;
-    const scy = sourceCanvas ? sourceCanvas.height / 2 : cy;
-    
-    const srcX = scx + r * Math.cos(thetaWedge);
-    const srcY = scy + r * Math.sin(thetaWedge);
+    // Return relative to the mathematical center (0,0)
+    const srcX = r * Math.cos(thetaWedge);
+    const srcY = r * Math.sin(thetaWedge);
     
     return { x: srcX, y: srcY };
   };
@@ -492,15 +500,8 @@ export default function App() {
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
     
-    const sourceCanvas = sourceCanvasRef.current;
-    const scx = sourceCanvas ? sourceCanvas.width / 2 : cx;
-    const scy = sourceCanvas ? sourceCanvas.height / 2 : cy;
-    
-    const dx = srcX - scx;
-    const dy = srcY - scy;
-    
-    let r = Math.sqrt(dx * dx + dy * dy);
-    let thetaWedge = Math.atan2(dy, dx);
+    let r = Math.sqrt(srcX * srcX + srcY * srcY);
+    let thetaWedge = Math.atan2(srcY, srcX);
     
     const time = getSimTime();
     const R = time * rotationSpeed;
