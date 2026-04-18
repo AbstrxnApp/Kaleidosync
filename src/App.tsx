@@ -21,6 +21,7 @@ export default function App() {
   const socketRef = useRef<Socket | null>(null);
 
   const [roomId, setRoomId] = useState<string | null>(null);
+  const [showSplash, setShowSplash] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
 
   useEffect(() => {
@@ -28,6 +29,11 @@ export default function App() {
     const roomParam = params.get('room');
     if (roomParam) {
       setRoomId(roomParam);
+      setShowSplash(false);
+    } else {
+      // Connect to global hub immediately so the background canvas renders
+      setRoomId('kaleidoscope-shared');
+      setShowSplash(true);
     }
   }, []);
 
@@ -508,12 +514,15 @@ export default function App() {
   const joinGlobal = () => {
     window.history.pushState({}, '', window.location.pathname);
     setRoomId("kaleidoscope-shared");
+    setShowSplash(false);
   };
 
   const createPrivate = () => {
     const randomId = Math.random().toString(36).substring(2, 10);
     window.history.pushState({}, '', `?room=${randomId}`);
     setRoomId(randomId);
+    clearSource();
+    setShowSplash(false);
   };
 
   const copyShareLink = () => {
@@ -523,46 +532,6 @@ export default function App() {
       setTimeout(() => setIsCopied(false), 2000);
     });
   };
-
-  if (!roomId) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0a] font-sans text-neutral-100 p-6 selection:bg-white/30 relative overflow-hidden">
-        
-        <div className="z-10 flex flex-col max-w-md w-full">
-          <h1 className="text-4xl md:text-5xl font-medium tracking-tighter mb-4 text-white">
-            Kaleidosync.
-          </h1>
-          <p className="text-sm text-neutral-400 mb-10 leading-relaxed max-w-sm">
-            Real-time collaborative fractal canvas. Minimal latency, infinite zoom.
-          </p>
-
-          <div className="flex flex-col w-full gap-4">
-            <button 
-              onClick={joinGlobal}
-              className="group relative flex items-center justify-center gap-4 w-full bg-white hover:bg-neutral-200 text-black border border-transparent p-4 rounded-xl transition-all duration-300"
-            >
-              <div className="flex flex-col items-start text-left flex-1">
-                <span className="font-semibold text-sm">Join Global Hub</span>
-                <span className="text-[11px] text-neutral-600 font-medium">Draw with everyone online</span>
-              </div>
-              <Globe size={18} className="text-black group-hover:scale-110 transition-transform" />
-            </button>
-
-            <button 
-              onClick={createPrivate}
-              className="group relative flex items-center justify-center gap-4 w-full bg-transparent hover:bg-neutral-900 border border-neutral-800 hover:border-neutral-700 p-4 rounded-xl transition-all duration-300"
-            >
-              <div className="flex flex-col items-start text-left flex-1">
-                <span className="font-semibold text-sm text-neutral-200">Create Private Session</span>
-                <span className="text-[11px] text-neutral-500 font-medium">Generate a unique invite link</span>
-              </div>
-              <Component size={18} className="text-neutral-400 group-hover:scale-110 transition-transform" />
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans text-neutral-100">
@@ -584,10 +553,48 @@ export default function App() {
         onTouchEnd={handlePointerUp}
       />
       
+      {showSplash && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0a0a]/60 backdrop-blur-md p-6 pointer-events-auto">
+          <div className="flex flex-col max-w-md w-full bg-[#0a0a0a]/90 border border-neutral-800 p-8 rounded-3xl shadow-2xl">
+            <h1 className="text-4xl font-medium tracking-tighter mb-4 text-white">
+              Kaleidosync.
+            </h1>
+            <p className="text-sm text-neutral-400 mb-8 leading-relaxed max-w-sm">
+              Welcome to the void! Paint in infinite reflection with friends, or jump into the ever-evolving global hub right now.
+            </p>
+
+            <div className="flex flex-col w-full gap-4">
+              <button 
+                onClick={joinGlobal}
+                className="group relative flex items-center justify-center gap-4 w-full bg-white hover:bg-neutral-200 text-black border border-transparent p-4 rounded-xl transition-all duration-300"
+              >
+                <div className="flex flex-col items-start text-left flex-1">
+                  <span className="font-semibold text-sm">Join Global Hub</span>
+                  <span className="text-[11px] text-neutral-600 font-medium">Draw with everyone online</span>
+                </div>
+                <Globe size={18} className="text-black group-hover:scale-110 transition-transform" />
+              </button>
+
+              <button 
+                onClick={createPrivate}
+                className="group relative flex items-center justify-center gap-4 w-full bg-transparent hover:bg-neutral-900 border border-neutral-800 hover:border-neutral-700 p-4 rounded-xl transition-all duration-300"
+              >
+                <div className="flex flex-col items-start text-left flex-1">
+                  <span className="font-semibold text-sm text-neutral-200">Create Private Room</span>
+                  <span className="text-[11px] text-neutral-500 font-medium">Generate a unique invite link</span>
+                </div>
+                <Component size={18} className="text-neutral-400 group-hover:scale-110 transition-transform" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* UI Overlay */}
-      <div className="absolute top-6 left-6 bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between pointer-events-auto">
+      {!showSplash && (
+        <div className="absolute top-6 left-6 bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between pointer-events-auto">
             <h1 className="text-xl font-medium tracking-tighter text-white">
               Kaleidosync
             </h1>
@@ -758,14 +765,17 @@ export default function App() {
           </div>
         </div>
 
-        <button 
-          onClick={emitClear}
-          className="flex items-center justify-center gap-2 py-3 px-4 bg-transparent hover:bg-red-500/10 text-red-400 hover:text-red-300 text-[11px] font-bold tracking-wider uppercase transition-colors rounded-lg border border-red-500/20 hover:border-red-500/30"
-        >
-          <RotateCcw size={14} />
-          Clear Canvas
-        </button>
+        {roomId !== 'kaleidoscope-shared' && (
+          <button 
+            onClick={emitClear}
+            className="flex items-center justify-center gap-2 py-3 px-4 bg-transparent hover:bg-red-500/10 text-red-400 hover:text-red-300 text-[11px] font-bold tracking-wider uppercase transition-colors rounded-lg border border-red-500/20 hover:border-red-500/30"
+          >
+            <RotateCcw size={14} />
+            Clear Canvas
+          </button>
+        )}
       </div>
+      )}
     </div>
   );
 }
