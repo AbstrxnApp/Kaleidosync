@@ -25,6 +25,7 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(window.innerWidth > 768);
   const [cursors, setCursors] = useState<Record<string, { x: number, y: number, color: string, effect: string, ts: number }>>({});
+  const [syncMetric, setSyncMetric] = useState(0);
 
   // Hoist redraw so it can be safely triggered by async sockets AND resize observers identically
   const redrawTriggerRef = useRef<() => void>(() => {});
@@ -112,8 +113,29 @@ export default function App() {
       strokeOrderRef.current = data.strokeOrder;
       strokesMapRef.current = new Map(Object.entries(data.strokes));
       
-      console.log("Attempting to redraw. Source ref:", sourceCanvasRef.current ? "Exists" : "Missing");
-      redrawTriggerRef.current();
+      // Bypass all React hooks and refs, execute immediately
+      if (!sourceCanvasRef.current) {
+        const offscreen = document.createElement("canvas");
+        const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
+        offscreen.width = D;
+        offscreen.height = D;
+        sourceCanvasRef.current = offscreen;
+      }
+      
+      const source = sourceCanvasRef.current;
+      const ctx = source.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, source.width, source.height);
+        strokeOrderRef.current.forEach(strokeId => {
+          const segments = strokesMapRef.current.get(strokeId) || [];
+          segments.forEach(seg => {
+            drawSegmentOnCtx(ctx, seg);
+          });
+        });
+      }
+      
+      redrawTriggerRef.current(); // Just in case it existed
+      setSyncMetric(data.strokeOrder.length);
     });
 
     socket.on("draw", (data: DrawSegment) => {
@@ -181,9 +203,18 @@ export default function App() {
         if (offscreen.width < D) {
           offscreen.width = D;
           offscreen.height = D;
-          // By fully destroying and completely redrawing the history array here natively,
-          // it guarantees no clipping edge cases from copying 0-width canvases on mobile devices.
-          redrawTriggerRef.current();
+          
+          // Pure redraw without relying on unstable React refs
+          const ctx = offscreen.getContext("2d");
+          if (ctx) {
+             ctx.clearRect(0, 0, offscreen.width, offscreen.height);
+             strokeOrderRef.current.forEach(strokeId => {
+               const segments = strokesMapRef.current.get(strokeId) || [];
+               segments.forEach(seg => {
+                 drawSegmentOnCtx(ctx, seg);
+               });
+             });
+          }
         }
       }
     };
@@ -312,15 +343,23 @@ export default function App() {
     const source = ensureSourceCanvas();
     const ctx = source.getContext("2d");
     if (!ctx) return;
+    
+    console.log("🛠️ redrawAllStrokes Executing!");
+    console.log("Memory Array Lengths: ", strokeOrderRef.current.length, "strokes");
+    console.log("Canvas Size:", source.width, source.height);
+
     ctx.clearRect(0, 0, source.width, source.height);
     
     // Redraw in exact order
+    let drawCount = 0;
     strokeOrderRef.current.forEach(strokeId => {
       const segments = strokesMapRef.current.get(strokeId) || [];
+      drawCount += segments.length;
       segments.forEach(seg => {
         drawSegmentOnCtx(ctx, seg);
       });
     });
+    console.log("🛠️ redrawAllStrokes Finished Drawing,", drawCount, "total segments.");
   }, [ensureSourceCanvas]);
 
   useEffect(() => {
@@ -945,6 +984,19 @@ export default function App() {
         </div>
       </div>
       )}
+
+      {/* Debug Overlay */}
+      <div className="absolute top-2 right-2 flex flex-col gap-2 z-50">
+        <div className="text-[10px] font-mono text-neutral-500 bg-black/50 p-2 rounded pointer-events-none">
+          Sync: {syncMetric} strokes | Size: {Object.keys(cursors).length} cursors
+        </div>
+        <button 
+          onClick={() => redrawTriggerRef.current()}
+          className="bg-black/50 hover:bg-neutral-800 text-neutral-400 text-[10px] py-1 px-2 rounded border border-neutral-700"
+        >
+          Force Redraw From Memory
+        </button>
+      </div>
     </div>
   );
 }
