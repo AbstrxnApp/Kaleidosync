@@ -23,7 +23,20 @@ export default function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(window.innerWidth > 768);
   const [cursors, setCursors] = useState<Record<string, { x: number, y: number, color: string, effect: string, ts: number }>>({});
+  const [metrics, setMetrics] = useState({
+    syncFired: 0,
+    syncStrokes: 0,
+    syncSegments: 0,
+    redrawCount: 0,
+    canvasSize: 0,
+    wsStatus: "offline",
+    roomsReceived: ""
+  });
+
+  // Hoist redraw so it can be safely triggered by async sockets AND resize observers identically
+  const redrawTriggerRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -70,6 +83,17 @@ export default function App() {
   const strokesMapRef = useRef<Map<string, DrawSegment[]>>(new Map());
   const myStrokeIdsRef = useRef<string[]>([]);
   const redoStackRef = useRef<{ id: string, segments: DrawSegment[] }[]>([]);
+
+  const ensureSourceCanvas = useCallback(() => {
+    if (!sourceCanvasRef.current) {
+      const offscreen = document.createElement("canvas");
+      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
+      offscreen.width = D;
+      offscreen.height = D;
+      sourceCanvasRef.current = offscreen;
+    }
+    return sourceCanvasRef.current;
+  }, []);
   const currentStrokeIdRef = useRef<string | null>(null);
 
   const updateHistoryState = useCallback(() => {
@@ -90,6 +114,55 @@ export default function App() {
 
     socket.on("connect", () => {
       socket.emit("join-room", roomId);
+    });
+
+    socket.on("sync", (data: { strokeOrder: string[], strokes: Record<string, DrawSegment[]> }) => {
+      console.log("SYNC RECEIVED on Client!", data);
+      strokeOrderRef.current = data.strokeOrder;
+      strokesMapRef.current = new Map(Object.entries(data.strokes));
+      
+      // Bypass all React hooks and refs, execute immediately
+      if (!sourceCanvasRef.current) {
+        const offscreen = document.createElement("canvas");
+        const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
+        offscreen.width = D;
+        offscreen.height = D;
+        sourceCanvasRef.current = offscreen;
+      }
+      
+      const performRedraw = () => {
+        const source = sourceCanvasRef.current;
+        if (!source) return;
+        const ctx = source.getContext("2d", { willReadFrequently: true });
+        let totalSegs = 0;
+        if (ctx) {
+          ctx.clearRect(0, 0, source.width, source.height);
+          strokeOrderRef.current.forEach(strokeId => {
+            const segments = strokesMapRef.current.get(strokeId) || [];
+            totalSegs += segments.length;
+            segments.forEach(seg => {
+              drawSegmentOnCtx(ctx, seg);
+            });
+          });
+          setMetrics(prev => ({
+            ...prev,
+            syncFired: prev.syncFired + 1,
+            syncStrokes: data.strokeOrder.length,
+            syncSegments: totalSegs,
+            canvasSize: source.width,
+            roomsReceived: data.strokeOrder.join(",").slice(0, 10)
+          }));
+        }
+      };
+
+      // Perform immediately
+      performRedraw();
+      
+      // Perform again after 500ms and 1500ms to guarantee any DOM/Render layout race conditions are forcefully crushed natively
+      setTimeout(performRedraw, 500);
+      setTimeout(performRedraw, 1500);
+      
+      redrawTriggerRef.current(); // Just in case it existed
     });
 
     socket.on("draw", (data: DrawSegment) => {
@@ -141,13 +214,7 @@ export default function App() {
 
   // Setup canvas & render loop
   useEffect(() => {
-    if (!sourceCanvasRef.current) {
-      const offscreen = document.createElement("canvas");
-      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
-      offscreen.width = D;
-      offscreen.height = D;
-      sourceCanvasRef.current = offscreen;
-    }
+    ensureSourceCanvas();
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -161,18 +228,19 @@ export default function App() {
         const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
         
         if (offscreen.width < D) {
-          if (offscreen.width > 0 && offscreen.height > 0) {
-            const temp = document.createElement("canvas");
-            temp.width = offscreen.width;
-            temp.height = offscreen.height;
-            temp.getContext("2d")?.drawImage(offscreen, 0, 0);
-            
-            offscreen.width = D;
-            offscreen.height = D;
-            offscreen.getContext("2d")?.drawImage(temp, (D - temp.width)/2, (D - temp.height)/2);
-          } else {
-            offscreen.width = D;
-            offscreen.height = D;
+          offscreen.width = D;
+          offscreen.height = D;
+          
+          // Pure redraw without relying on unstable React refs
+          const ctx = offscreen.getContext("2d");
+          if (ctx) {
+             ctx.clearRect(0, 0, offscreen.width, offscreen.height);
+             strokeOrderRef.current.forEach(strokeId => {
+               const segments = strokesMapRef.current.get(strokeId) || [];
+               segments.forEach(seg => {
+                 drawSegmentOnCtx(ctx, seg);
+               });
+             });
           }
         }
       }
@@ -298,21 +366,27 @@ export default function App() {
     };
   }, [segments, rotationSpeed, zoomSpeed]);
 
-  const redrawAllStrokes = () => {
-    const source = sourceCanvasRef.current;
-    if (!source) return;
+  const redrawAllStrokes = useCallback(() => {
+    const source = ensureSourceCanvas();
     const ctx = source.getContext("2d");
     if (!ctx) return;
+    
     ctx.clearRect(0, 0, source.width, source.height);
     
     // Redraw in exact order
+    let drawCount = 0;
     strokeOrderRef.current.forEach(strokeId => {
       const segments = strokesMapRef.current.get(strokeId) || [];
+      drawCount += segments.length;
       segments.forEach(seg => {
         drawSegmentOnCtx(ctx, seg);
       });
     });
-  };
+  }, [ensureSourceCanvas]);
+
+  useEffect(() => {
+    redrawTriggerRef.current = redrawAllStrokes;
+  }, [redrawAllStrokes]);
 
   const addSegmentLocally = (seg: DrawSegment) => {
     if (!strokesMapRef.current.has(seg.strokeId)) {
@@ -321,11 +395,9 @@ export default function App() {
     }
     strokesMapRef.current.get(seg.strokeId)!.push(seg);
     
-    const source = sourceCanvasRef.current;
-    if (source) {
-      const ctx = source.getContext("2d");
-      if (ctx) drawSegmentOnCtx(ctx, seg);
-    }
+    const source = ensureSourceCanvas();
+    const ctx = source.getContext("2d");
+    if (ctx) drawSegmentOnCtx(ctx, seg);
   };
 
   const handleRemoteDraw = (seg: DrawSegment) => {
@@ -336,22 +408,30 @@ export default function App() {
     if (strokesMapRef.current.has(strokeId)) {
       strokesMapRef.current.delete(strokeId);
       strokeOrderRef.current = strokeOrderRef.current.filter(id => id !== strokeId);
-      redrawAllStrokes();
+      redrawTriggerRef.current();
     }
   };
 
   const drawSegmentOnCtx = (ctx: CanvasRenderingContext2D, seg: DrawSegment) => {
+    const scx = ctx.canvas.width / 2;
+    const scy = ctx.canvas.height / 2;
+    
+    const x0 = scx + seg.x0;
+    const y0 = scy + seg.y0;
+    const x1 = scx + seg.x1;
+    const y1 = scy + seg.y1;
+
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(seg.x0, seg.y0);
-    ctx.lineTo(seg.x1, seg.y1);
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
     
     if (seg.effect === 'neon') {
       ctx.shadowBlur = seg.lineWidth * 2.5;
       ctx.shadowColor = seg.color;
       ctx.strokeStyle = '#ffffff'; 
     } else if (seg.effect === 'gradient') {
-      const grad = ctx.createLinearGradient(seg.x0, seg.y0, seg.x1, seg.y1);
+      const grad = ctx.createLinearGradient(x0, y0, x1, y1);
       grad.addColorStop(0, seg.color);
       grad.addColorStop(1, '#ffffff');
       ctx.strokeStyle = grad;
@@ -365,8 +445,8 @@ export default function App() {
     ctx.stroke();
 
     if (seg.effect === 'glitter') {
-      const dx = seg.x1 - seg.x0;
-      const dy = seg.y1 - seg.y0;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
       const dist = Math.hypot(dx, dy);
       const steps = Math.max(1, Math.floor(dist / Math.max(2, seg.lineWidth * 0.5)));
       
@@ -376,8 +456,8 @@ export default function App() {
          const pseudoRandomX = Math.abs(Math.sin((seg.x0 + i) * 12.9898 + (seg.y0 + i) * 78.233)) % 1;
          const pseudoRandomY = Math.abs(Math.sin((seg.x0 + i) * 78.233 + (seg.y0 + i) * 12.9898)) % 1;
          
-         const x = seg.x0 + dx * t + (pseudoRandomX - 0.5) * seg.lineWidth * 3;
-         const y = seg.y0 + dy * t + (pseudoRandomY - 0.5) * seg.lineWidth * 3;
+         const x = x0 + dx * t + (pseudoRandomX - 0.5) * seg.lineWidth * 3;
+         const y = y0 + dy * t + (pseudoRandomY - 0.5) * seg.lineWidth * 3;
          const s = pseudoRandomX * (seg.lineWidth * 0.6) + 0.5;
          
          ctx.beginPath();
@@ -389,8 +469,7 @@ export default function App() {
   };
 
   const clearSource = () => {
-    const source = sourceCanvasRef.current;
-    if (!source) return;
+    const source = ensureSourceCanvas();
     const ctx = source.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, source.width, source.height);
@@ -418,7 +497,7 @@ export default function App() {
       strokeOrderRef.current = strokeOrderRef.current.filter(id => id !== lastMyId);
       
       socketRef.current?.emit("undo", { roomId, strokeId: lastMyId });
-      redrawAllStrokes();
+      redrawTriggerRef.current();
       updateHistoryState();
     }
   };
@@ -469,12 +548,9 @@ export default function App() {
       thetaWedge = sliceAngle - thetaWedge;
     }
     
-    const sourceCanvas = sourceCanvasRef.current;
-    const scx = sourceCanvas ? sourceCanvas.width / 2 : cx;
-    const scy = sourceCanvas ? sourceCanvas.height / 2 : cy;
-    
-    const srcX = scx + r * Math.cos(thetaWedge);
-    const srcY = scy + r * Math.sin(thetaWedge);
+    // Return relative to the mathematical center (0,0)
+    const srcX = r * Math.cos(thetaWedge);
+    const srcY = r * Math.sin(thetaWedge);
     
     return { x: srcX, y: srcY };
   };
@@ -486,15 +562,8 @@ export default function App() {
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
     
-    const sourceCanvas = sourceCanvasRef.current;
-    const scx = sourceCanvas ? sourceCanvas.width / 2 : cx;
-    const scy = sourceCanvas ? sourceCanvas.height / 2 : cy;
-    
-    const dx = srcX - scx;
-    const dy = srcY - scy;
-    
-    let r = Math.sqrt(dx * dx + dy * dy);
-    let thetaWedge = Math.atan2(dy, dx);
+    let r = Math.sqrt(srcX * srcX + srcY * srcY);
+    let thetaWedge = Math.atan2(srcY, srcX);
     
     const time = getSimTime();
     const R = time * rotationSpeed;
@@ -724,17 +793,36 @@ export default function App() {
         </div>
       )}
 
+      {/* Mobile Menu Toggle Button */}
+      {!showSplash && !isMenuOpen && (
+        <button 
+          onClick={() => setIsMenuOpen(true)}
+          className="absolute z-40 top-6 left-6 p-4 rounded-xl bg-[#0a0a0a]/90 backdrop-blur-xl border border-neutral-800 text-white shadow-2xl hover:scale-105 active:scale-95 transition-all outline-none"
+        >
+          <Palette size={20} />
+        </button>
+      )}
+
       {/* UI Overlay */}
-      {!showSplash && (
-        <div className="absolute top-6 left-6 bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
+      {!showSplash && isMenuOpen && (
+        <div className="absolute z-40 top-6 left-6 bottom-6 md:bottom-auto w-[calc(100%-48px)] md:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between pointer-events-auto">
             <h1 className="text-xl font-medium tracking-tighter text-white">
               Kaleidosync
             </h1>
-            <div className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 bg-neutral-900 px-2 py-1 rounded-md border border-neutral-800">
-              <Users size={12} className="text-neutral-500" />
-              <span>{connectedUsers}</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 bg-neutral-900 px-2 py-1 rounded-md border border-neutral-800">
+                <Users size={12} className="text-neutral-500" />
+                <span>{connectedUsers}</span>
+              </div>
+              <button 
+                onClick={() => setIsMenuOpen(false)}
+                className="text-neutral-500 hover:text-white transition-colors"
+                aria-label="Close menu"
+              >
+                <RotateCcw size={14} className="rotate-45" /> {/* Makes a simple X shape */}
+              </button>
             </div>
           </div>
           
@@ -918,6 +1006,22 @@ export default function App() {
         </div>
       </div>
       )}
+
+      {/* Debug Overlay */}
+      <div className="absolute top-2 right-2 flex flex-col gap-2 z-50">
+        <div className="text-[10px] font-mono text-neutral-500 bg-black/50 p-2 rounded pointer-events-none whitespace-pre-line">
+          SyncFired: {metrics.syncFired}
+          Strokes: {metrics.syncStrokes}
+          Segments: {metrics.syncSegments}
+          Size: {metrics.canvasSize}px
+        </div>
+        <button 
+          onClick={() => redrawTriggerRef.current()}
+          className="bg-black/50 hover:bg-neutral-800 text-neutral-400 text-[10px] py-1 px-2 rounded border border-neutral-700"
+        >
+          Force Redraw From Memory
+        </button>
+      </div>
     </div>
   );
 }

@@ -16,18 +16,32 @@ async function startServer() {
   // In-memory storage for room canvas state
   const roomsState = new Map<string, { strokeOrder: string[], strokes: Record<string, any[]> }>();
 
+  // Expose backend memory state for debug verification
+  app.get("/api/debug-state", (req, res) => {
+    const stateObj: any = {};
+    for (const [key, val] of roomsState.entries()) {
+      stateObj[key] = {
+        strokeCount: val.strokeOrder.length,
+        points: Object.values(val.strokes).reduce((acc, curr) => acc + curr.length, 0)
+      };
+    }
+    res.json({ rooms: stateObj });
+  });
+
   // Real-time synchronization
   io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);
 
-    // Give new clients the active room ID if requested
     socket.on("join-room", (roomId) => {
       socket.join(roomId);
       console.log(`Socket ${socket.id} joined room ${roomId}`);
       
       // Send existing canvas state to the newly joined client
       if (roomsState.has(roomId)) {
+        console.log(`Sending sync to ${socket.id} for ${roomId}. Strokes: ${roomsState.get(roomId)!.strokeOrder.length}`);
         socket.emit("sync", roomsState.get(roomId));
+      } else {
+        console.log(`No history available yet for room ${roomId}`);
       }
 
       const room = io.sockets.adapter.rooms.get(roomId);
