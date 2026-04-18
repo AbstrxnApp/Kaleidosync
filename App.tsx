@@ -61,6 +61,7 @@ export default function App() {
   const isDrawingRef = useRef(false);
   const currentScreenPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastPhaseRef = useRef(0);
+  const cursorThrottleRef = useRef(0);
   
   // Create refs for state to be used inside the rAF loop
   const colorRef = useRef(color); colorRef.current = color;
@@ -318,7 +319,7 @@ export default function App() {
         // Break stroke if jumping caused by loop rollover
         if (isRollover) {
           lastPos.current = newPos;
-        } else if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05) {
+        } else if (Math.abs(dx) > 2.0 || Math.abs(dy) > 2.0) {
           const seg: DrawSegment = {
             strokeId: currentStrokeIdRef.current,
             x0, y0, x1, y1,
@@ -581,9 +582,9 @@ export default function App() {
   const handlePointerMove = (clientX: number, clientY: number) => {
     // Emit ghost cursor
     if (socketRef.current && roomIdRef.current) {
-      if (!lastPhaseRef.current || (Date.now() - lastPhaseRef.current > 30)) {
-        // use lastPhaseRef as throttling timer for mouse movements just to reuse ref
-        lastPhaseRef.current = Date.now(); 
+      if (!cursorThrottleRef.current || (Date.now() - cursorThrottleRef.current > 30)) {
+        // use cursorThrottleRef as throttling timer for mouse movements
+        cursorThrottleRef.current = Date.now(); 
         const mapped = getMappedCoords(clientX, clientY);
         socketRef.current.volatile.emit("cursor", { 
           roomId: roomIdRef.current, 
@@ -616,7 +617,7 @@ export default function App() {
       // Ensure snap jumps don't draw lines
       if (isRollover || dist > sourceCanvasRef.current!.width * 0.2) {
         lastPos.current = newPos;
-      } else if (dist > 0.05) {
+      } else if (dist > 2.0) {
         const seg: DrawSegment = {
           strokeId: currentStrokeIdRef.current,
           x0, y0, x1, y1,
