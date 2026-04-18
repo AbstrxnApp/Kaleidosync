@@ -23,7 +23,11 @@ export default function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(window.innerWidth > 768);
   const [cursors, setCursors] = useState<Record<string, { x: number, y: number, color: string, effect: string, ts: number }>>({});
+
+  // Hoist redraw so it can be safely triggered by async sockets AND resize observers identically
+  const redrawTriggerRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -98,7 +102,7 @@ export default function App() {
       strokesMapRef.current = new Map(Object.entries(data.strokes));
       
       console.log("Attempting to redraw. Source ref:", sourceCanvasRef.current ? "Exists" : "Missing");
-      redrawAllStrokes();
+      redrawTriggerRef.current();
     });
 
     socket.on("draw", (data: DrawSegment) => {
@@ -170,19 +174,11 @@ export default function App() {
         const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
         
         if (offscreen.width < D) {
-          if (offscreen.width > 0 && offscreen.height > 0) {
-            const temp = document.createElement("canvas");
-            temp.width = offscreen.width;
-            temp.height = offscreen.height;
-            temp.getContext("2d")?.drawImage(offscreen, 0, 0);
-            
-            offscreen.width = D;
-            offscreen.height = D;
-            offscreen.getContext("2d")?.drawImage(temp, (D - temp.width)/2, (D - temp.height)/2);
-          } else {
-            offscreen.width = D;
-            offscreen.height = D;
-          }
+          offscreen.width = D;
+          offscreen.height = D;
+          // By fully destroying and completely redrawing the history array here natively,
+          // it guarantees no clipping edge cases from copying 0-width canvases on mobile devices.
+          redrawTriggerRef.current();
         }
       }
     };
@@ -307,7 +303,7 @@ export default function App() {
     };
   }, [segments, rotationSpeed, zoomSpeed]);
 
-  const redrawAllStrokes = () => {
+  const redrawAllStrokes = useCallback(() => {
     const source = sourceCanvasRef.current;
     if (!source) return;
     const ctx = source.getContext("2d");
@@ -321,7 +317,11 @@ export default function App() {
         drawSegmentOnCtx(ctx, seg);
       });
     });
-  };
+  }, []);
+
+  useEffect(() => {
+    redrawTriggerRef.current = redrawAllStrokes;
+  }, [redrawAllStrokes]);
 
   const addSegmentLocally = (seg: DrawSegment) => {
     if (!strokesMapRef.current.has(seg.strokeId)) {
@@ -345,7 +345,7 @@ export default function App() {
     if (strokesMapRef.current.has(strokeId)) {
       strokesMapRef.current.delete(strokeId);
       strokeOrderRef.current = strokeOrderRef.current.filter(id => id !== strokeId);
-      redrawAllStrokes();
+      redrawTriggerRef.current();
     }
   };
 
@@ -435,7 +435,7 @@ export default function App() {
       strokeOrderRef.current = strokeOrderRef.current.filter(id => id !== lastMyId);
       
       socketRef.current?.emit("undo", { roomId, strokeId: lastMyId });
-      redrawAllStrokes();
+      redrawTriggerRef.current();
       updateHistoryState();
     }
   };
@@ -731,17 +731,36 @@ export default function App() {
         </div>
       )}
 
+      {/* Mobile Menu Toggle Button */}
+      {!showSplash && !isMenuOpen && (
+        <button 
+          onClick={() => setIsMenuOpen(true)}
+          className="absolute z-40 top-6 left-6 p-4 rounded-xl bg-[#0a0a0a]/90 backdrop-blur-xl border border-neutral-800 text-white shadow-2xl hover:scale-105 active:scale-95 transition-all outline-none"
+        >
+          <Palette size={20} />
+        </button>
+      )}
+
       {/* UI Overlay */}
-      {!showSplash && (
-        <div className="absolute top-6 left-6 bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
+      {!showSplash && isMenuOpen && (
+        <div className="absolute z-40 top-6 left-6 bottom-6 md:bottom-auto w-[calc(100%-48px)] md:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between pointer-events-auto">
             <h1 className="text-xl font-medium tracking-tighter text-white">
               Kaleidosync
             </h1>
-            <div className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 bg-neutral-900 px-2 py-1 rounded-md border border-neutral-800">
-              <Users size={12} className="text-neutral-500" />
-              <span>{connectedUsers}</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 bg-neutral-900 px-2 py-1 rounded-md border border-neutral-800">
+                <Users size={12} className="text-neutral-500" />
+                <span>{connectedUsers}</span>
+              </div>
+              <button 
+                onClick={() => setIsMenuOpen(false)}
+                className="text-neutral-500 hover:text-white transition-colors"
+                aria-label="Close menu"
+              >
+                <RotateCcw size={14} className="rotate-45" /> {/* Makes a simple X shape */}
+              </button>
             </div>
           </div>
           
