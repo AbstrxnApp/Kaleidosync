@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent, useMemo } from "react";
 import { io, Socket } from "socket.io-client";
-import { Paintbrush, RotateCcw, Users, Undo2, Redo2, Sparkles, Zap, Palette, Link as LinkIcon, Component, Globe, Circle, MousePointer2 } from "lucide-react";
+import { Paintbrush, RotateCcw, Users, Undo2, Redo2, Sparkles, Zap, Palette, Link as LinkIcon, Component, Globe, Circle, MousePointer2, Camera } from "lucide-react";
 
 type Effect = 'none' | 'neon' | 'glitter' | 'gradient';
 
@@ -23,6 +23,7 @@ export default function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [showSplash, setShowSplash] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+  const [cursors, setCursors] = useState<Record<string, { x: number, y: number, color: string, effect: string, ts: number }>>({});
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -103,6 +104,13 @@ export default function App() {
       clearSource();
     });
 
+    socket.on("cursor", (data: { id: string, x: number, y: number, color: string, effect: string }) => {
+      setCursors(prev => ({
+        ...prev,
+        [data.id]: { x: data.x, y: data.y, color: data.color, effect: data.effect, ts: Date.now() }
+      }));
+    });
+
     socket.on("user-count", (count) => {
       setConnectedUsers(count);
     });
@@ -112,11 +120,30 @@ export default function App() {
     };
   }, [roomId]);
 
+  // Cursor decay loop
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setCursors(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const [id, cursor] of Object.entries(next) as [string, { ts: number }][]) {
+          if (now - cursor.ts > 2000) { // Decay after 2 seconds
+            delete next[id];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Setup canvas & render loop
   useEffect(() => {
     if (!sourceCanvasRef.current) {
       const offscreen = document.createElement("canvas");
-      const D = Math.max(window.innerWidth, window.innerHeight) * 2;
+      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
       offscreen.width = D;
       offscreen.height = D;
       sourceCanvasRef.current = offscreen;
@@ -126,22 +153,27 @@ export default function App() {
     if (!canvas) return;
 
     const handleResize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      canvas.width = window.innerWidth || 800;
+      canvas.height = window.innerHeight || 600;
       
       if (sourceCanvasRef.current) {
         const offscreen = sourceCanvasRef.current;
-        const D = Math.max(window.innerWidth, window.innerHeight) * 2;
+        const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
         
         if (offscreen.width < D) {
-          const temp = document.createElement("canvas");
-          temp.width = offscreen.width;
-          temp.height = offscreen.height;
-          temp.getContext("2d")?.drawImage(offscreen, 0, 0);
-          
-          offscreen.width = D;
-          offscreen.height = D;
-          offscreen.getContext("2d")?.drawImage(temp, (D - temp.width)/2, (D - temp.height)/2);
+          if (offscreen.width > 0 && offscreen.height > 0) {
+            const temp = document.createElement("canvas");
+            temp.width = offscreen.width;
+            temp.height = offscreen.height;
+            temp.getContext("2d")?.drawImage(offscreen, 0, 0);
+            
+            offscreen.width = D;
+            offscreen.height = D;
+            offscreen.getContext("2d")?.drawImage(temp, (D - temp.width)/2, (D - temp.height)/2);
+          } else {
+            offscreen.width = D;
+            offscreen.height = D;
+          }
         }
       }
     };
@@ -445,11 +477,44 @@ export default function App() {
     const srcY = scy + r * Math.sin(thetaWedge);
     
     return { x: srcX, y: srcY };
-  }; // Moved getMappedCoords out from below state for loop access
+  };
+
+  const getScreenCoordsFromMapped = (srcX: number, srcY: number) => {
+    // Reverse the transformation to find where on the screen a source coordinate is
+    // NOTE: This will only pick one instance of the reflected point to render the cursor at, 
+    // rather than all copies, which is perfect for showing the raw "ghost pen" location.
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    
+    const sourceCanvas = sourceCanvasRef.current;
+    const scx = sourceCanvas ? sourceCanvas.width / 2 : cx;
+    const scy = sourceCanvas ? sourceCanvas.height / 2 : cy;
+    
+    const dx = srcX - scx;
+    const dy = srcY - scy;
+    
+    let r = Math.sqrt(dx * dx + dy * dy);
+    let thetaWedge = Math.atan2(dy, dx);
+    
+    const time = getSimTime();
+    const R = time * rotationSpeed;
+    const timePhase = (time * zoomSpeed) % 1;
+    const S = Math.pow(1.5, timePhase);
+    
+    // Apply scale and rotation forward
+    r = r * S;
+    let theta = thetaWedge + R;
+    
+    const screenX = cx + r * Math.cos(theta);
+    const screenY = cy + r * Math.sin(theta);
+    
+    return { x: screenX, y: screenY };
+  };
 
   const handlePointerDown = (clientX: number, clientY: number) => {
     isDrawingRef.current = true;
     currentScreenPosRef.current = { x: clientX, y: clientY };
+    lastPhaseRef.current = Date.now(); // Used for cursor throttling when moving
     
     // Start a new local stroke and reset redo history upon drawing new line
     currentStrokeIdRef.current = Math.random().toString(36).substring(2, 9);
@@ -462,6 +527,22 @@ export default function App() {
   };
 
   const handlePointerMove = (clientX: number, clientY: number) => {
+    // Emit ghost cursor
+    if (socketRef.current && roomIdRef.current) {
+      if (!lastPhaseRef.current || (Date.now() - lastPhaseRef.current > 30)) {
+        // use lastPhaseRef as throttling timer for mouse movements just to reuse ref
+        lastPhaseRef.current = Date.now(); 
+        const mapped = getMappedCoords(clientX, clientY);
+        socketRef.current.volatile.emit("cursor", { 
+          roomId: roomIdRef.current, 
+          x: mapped.x, 
+          y: mapped.y, 
+          color: colorRef.current,
+          effect: effectRef.current
+        });
+      }
+    }
+
     if (!isDrawingRef.current) return;
     
     currentScreenPosRef.current = { x: clientX, y: clientY };
@@ -533,6 +614,30 @@ export default function App() {
     });
   };
 
+  const takeSnapshot = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return;
+    
+    // Create an offscreen canvas to combine the black background and the transparent fractal
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const ctx = exportCanvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Draw black background
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    // Draw kaleidoscope
+    ctx.drawImage(canvas, 0, 0);
+
+    const data = exportCanvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.download = `kaleidosync-${Math.random().toString(36).substring(2, 8)}.png`;
+    link.href = data;
+    link.click();
+  };
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans text-neutral-100">
       <canvas
@@ -553,6 +658,35 @@ export default function App() {
         onTouchEnd={handlePointerUp}
       />
       
+      {/* Ghost Cursors Overlays */}
+      {!showSplash && Object.entries(cursors).map(([id, cursor]: [string, any]) => {
+        const screenPos = getScreenCoordsFromMapped(cursor.x, cursor.y);
+        // Only render if roughly onscreen
+        if (screenPos.x < -100 || screenPos.x > window.innerWidth + 100) return null;
+        return (
+          <div 
+            key={id}
+            className="absolute z-10 pointer-events-none transition-all duration-[30ms] ease-linear flex flex-col items-center gap-1"
+            style={{ 
+              left: screenPos.x, 
+              top: screenPos.y,
+              transform: 'translate(-50%, -50%)'
+            }}
+          >
+            <div 
+              className="w-3 h-3 rounded-full border border-white/50 animate-pulse"
+              style={{ 
+                backgroundColor: cursor.color,
+                boxShadow: cursor.effect === 'neon' ? `0 0 10px ${cursor.color}` : 'none'
+              }}
+            />
+            <span className="text-[9px] font-mono font-bold tracking-widest uppercase bg-[#0a0a0a]/80 text-white/50 px-1.5 py-0.5 rounded-sm">
+              GUEST
+            </span>
+          </div>
+        );
+      })}
+
       {showSplash && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#0a0a0a]/60 backdrop-blur-md p-6 pointer-events-auto">
           <div className="flex flex-col max-w-md w-full bg-[#0a0a0a]/90 border border-neutral-800 p-8 rounded-3xl shadow-2xl">
@@ -715,7 +849,7 @@ export default function App() {
                 />
               </div>
               <div className="flex gap-2 flex-1 items-center px-1">
-                {['#ffffff', '#a8a29e', '#000000'].map(c => (
+                {['#ffffff', '#ff3366', '#33ccff', '#ccff00'].map(c => (
                   <button
                     key={c}
                     onClick={() => setColor(c)}
@@ -765,15 +899,23 @@ export default function App() {
           </div>
         </div>
 
-        {roomId !== 'kaleidoscope-shared' && (
+        <div className="flex gap-2 w-full mt-2">
           <button 
-            onClick={emitClear}
-            className="flex items-center justify-center gap-2 py-3 px-4 bg-transparent hover:bg-red-500/10 text-red-400 hover:text-red-300 text-[11px] font-bold tracking-wider uppercase transition-colors rounded-lg border border-red-500/20 hover:border-red-500/30"
+            onClick={takeSnapshot}
+            className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-white hover:bg-neutral-200 text-black text-[11px] font-bold tracking-wider uppercase transition-colors rounded-lg border border-transparent shadow-[0_0_20px_rgba(255,255,255,0.1)]"
           >
-            <RotateCcw size={14} />
-            Clear Canvas
+            <Camera size={14} />
+            Capture Art
           </button>
-        )}
+          {roomId !== 'kaleidoscope-shared' && (
+            <button 
+              onClick={emitClear}
+              className="flex items-center justify-center gap-2 py-3 px-4 bg-transparent hover:bg-red-500/10 text-red-400 hover:text-red-300 text-[11px] font-bold tracking-wider uppercase transition-colors rounded-lg border border-red-500/20 hover:border-red-500/30"
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+        </div>
       </div>
       )}
     </div>

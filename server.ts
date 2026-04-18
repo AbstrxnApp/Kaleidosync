@@ -31,6 +31,10 @@ async function startServer() {
       socket.to(data.roomId).emit("draw", data);
     });
 
+    socket.on("cursor", (data) => {
+      socket.to(data.roomId).volatile.emit("cursor", { id: socket.id, ...data });
+    });
+
     socket.on("undo", (data) => {
       socket.to(data.roomId).emit("undo", data);
     });
