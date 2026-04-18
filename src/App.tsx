@@ -25,15 +25,6 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(window.innerWidth > 768);
   const [cursors, setCursors] = useState<Record<string, { x: number, y: number, color: string, effect: string, ts: number }>>({});
-  const [metrics, setMetrics] = useState({
-    syncFired: 0,
-    syncStrokes: 0,
-    syncSegments: 0,
-    redrawCount: 0,
-    canvasSize: 0,
-    wsStatus: "offline",
-    roomsReceived: ""
-  });
 
   // Hoist redraw so it can be safely triggered by async sockets AND resize observers identically
   const redrawTriggerRef = useRef<() => void>(() => {});
@@ -144,14 +135,6 @@ export default function App() {
               drawSegmentOnCtx(ctx, seg);
             });
           });
-          setMetrics(prev => ({
-            ...prev,
-            syncFired: prev.syncFired + 1,
-            syncStrokes: data.strokeOrder.length,
-            syncSegments: totalSegs,
-            canvasSize: source.width,
-            roomsReceived: data.strokeOrder.join(",").slice(0, 10)
-          }));
         }
       };
 
@@ -708,7 +691,7 @@ export default function App() {
   };
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans text-neutral-100">
+    <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans text-neutral-100"> 
       <canvas
         ref={canvasRef}
         className="absolute inset-0 cursor-crosshair touch-none"
@@ -805,7 +788,7 @@ export default function App() {
 
       {/* UI Overlay */}
       {!showSplash && isMenuOpen && (
-        <div className="absolute z-40 top-6 left-6 bottom-6 md:bottom-auto w-[calc(100%-48px)] md:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
+        <div className="absolute z-40 top-4 left-4 sm:top-6 sm:left-6 bottom-4 sm:bottom-auto max-h-[calc(100dvh-32px)] sm:max-h-[calc(100dvh-48px)] w-[calc(100%-32px)] sm:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto hide-scrollbar">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between pointer-events-auto">
             <h1 className="text-xl font-medium tracking-tighter text-white">
@@ -1006,22 +989,6 @@ export default function App() {
         </div>
       </div>
       )}
-
-      {/* Debug Overlay */}
-      <div className="absolute top-2 right-2 flex flex-col gap-2 z-50">
-        <div className="text-[10px] font-mono text-neutral-500 bg-black/50 p-2 rounded pointer-events-none whitespace-pre-line">
-          SyncFired: {metrics.syncFired}
-          Strokes: {metrics.syncStrokes}
-          Segments: {metrics.syncSegments}
-          Size: {metrics.canvasSize}px
-        </div>
-        <button 
-          onClick={() => redrawTriggerRef.current()}
-          className="bg-black/50 hover:bg-neutral-800 text-neutral-400 text-[10px] py-1 px-2 rounded border border-neutral-700"
-        >
-          Force Redraw From Memory
-        </button>
-      </div>
     </div>
   );
 }
