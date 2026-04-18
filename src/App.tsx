@@ -61,6 +61,7 @@ export default function App() {
   const isDrawingRef = useRef(false);
   const currentScreenPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastPhaseRef = useRef(0);
+  const cursorThrottleRef = useRef(0);
   
   // Create refs for state to be used inside the rAF loop
   const colorRef = useRef(color); colorRef.current = color;
@@ -70,20 +71,32 @@ export default function App() {
   const effectRef = useRef(effect); effectRef.current = effect;
 
   // History state refs
-  const strokeOrderRef = useRef<string[]>([]);
-  const strokesMapRef = useRef<Map<string, DrawSegment[]>>(new Map());
+  const allSegmentsRef = useRef<DrawSegment[]>([]);
   const myStrokeIdsRef = useRef<string[]>([]);
   const redoStackRef = useRef<{ id: string, segments: DrawSegment[] }[]>([]);
+  const kalCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const kalNeedsUpdateRef = useRef<boolean>(true);
 
   const ensureSourceCanvas = useCallback(() => {
     if (!sourceCanvasRef.current) {
       const offscreen = document.createElement("canvas");
-      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
+      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 1.5;
       offscreen.width = D;
       offscreen.height = D;
       sourceCanvasRef.current = offscreen;
     }
     return sourceCanvasRef.current;
+  }, []);
+
+  const ensureKalCanvas = useCallback(() => {
+    if (!kalCanvasRef.current) {
+      const offscreen = document.createElement("canvas");
+      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 1.5;
+      offscreen.width = D;
+      offscreen.height = D;
+      kalCanvasRef.current = offscreen;
+    }
+    return kalCanvasRef.current;
   }, []);
   const currentStrokeIdRef = useRef<string | null>(null);
 
@@ -107,10 +120,9 @@ export default function App() {
       socket.emit("join-room", roomId);
     });
 
-    socket.on("sync", (data: { strokeOrder: string[], strokes: Record<string, DrawSegment[]> }) => {
+    socket.on("sync", (data: { segments: DrawSegment[] }) => {
       console.log("SYNC RECEIVED on Client!", data);
-      strokeOrderRef.current = data.strokeOrder;
-      strokesMapRef.current = new Map(Object.entries(data.strokes));
+      allSegmentsRef.current = data.segments || [];
       
       // Bypass all React hooks and refs, execute immediately
       if (!sourceCanvasRef.current) {
@@ -122,20 +134,16 @@ export default function App() {
       }
       
       const performRedraw = () => {
-        const source = sourceCanvasRef.current;
+        const source = ensureSourceCanvas();
         if (!source) return;
         const ctx = source.getContext("2d", { willReadFrequently: true });
-        let totalSegs = 0;
         if (ctx) {
           ctx.clearRect(0, 0, source.width, source.height);
-          strokeOrderRef.current.forEach(strokeId => {
-            const segments = strokesMapRef.current.get(strokeId) || [];
-            totalSegs += segments.length;
-            segments.forEach(seg => {
-              drawSegmentOnCtx(ctx, seg);
-            });
+          allSegmentsRef.current.forEach(seg => {
+            drawSegmentOnCtx(ctx, seg);
           });
         }
+        kalNeedsUpdateRef.current = true;
       };
 
       // Perform immediately
@@ -202,31 +210,23 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // Initial resize trigger to build kalCanvas
     const handleResize = () => {
       canvas.width = window.innerWidth || 800;
       canvas.height = window.innerHeight || 600;
       
-      if (sourceCanvasRef.current) {
-        const offscreen = sourceCanvasRef.current;
-        const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
-        
-        if (offscreen.width < D) {
-          offscreen.width = D;
-          offscreen.height = D;
-          
-          // Pure redraw without relying on unstable React refs
-          const ctx = offscreen.getContext("2d");
-          if (ctx) {
-             ctx.clearRect(0, 0, offscreen.width, offscreen.height);
-             strokeOrderRef.current.forEach(strokeId => {
-               const segments = strokesMapRef.current.get(strokeId) || [];
-               segments.forEach(seg => {
-                 drawSegmentOnCtx(ctx, seg);
-               });
-             });
-          }
-        }
+      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 1.5;
+      
+      if (sourceCanvasRef.current && sourceCanvasRef.current.width < D) {
+         sourceCanvasRef.current.width = D;
+         sourceCanvasRef.current.height = D;
       }
+      if (kalCanvasRef.current && kalCanvasRef.current.width < D) {
+         kalCanvasRef.current.width = D;
+         kalCanvasRef.current.height = D;
+      }
+      
+      redrawAllStrokes();
     };
     window.addEventListener("resize", handleResize);
     handleResize();
@@ -235,75 +235,84 @@ export default function App() {
 
     const render = () => {
       const ctx = canvas.getContext("2d");
-      const source = sourceCanvasRef.current;
-      if (!ctx || !source) return;
+      const source = ensureSourceCanvas();
+      const kalCanvas = ensureKalCanvas();
+      if (!ctx || !source || !kalCanvas) return;
 
-      const time = getSimTime();
+      const time = (Date.now() - startTimeRef.current) / 1000;
+      
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const scx = source.width / 2;
+      const scy = source.height / 2;
+      const sliceAngle = (Math.PI * 2) / segments;
+      const clipRadius = Math.hypot(scx, scy);
+
+      // Pre-render the mathematical kaleidoscope if any stroke invalidated it
+      if (kalNeedsUpdateRef.current) {
+        const kalCtx = kalCanvas.getContext("2d");
+        if (kalCtx) {
+          kalCtx.clearRect(0, 0, kalCanvas.width, kalCanvas.height);
+          for (let i = 0; i < segments; i++) {
+            kalCtx.save();
+            kalCtx.translate(scx, scy);
+            kalCtx.rotate(i * sliceAngle);
+            
+            kalCtx.beginPath();
+            kalCtx.moveTo(0, 0);
+            kalCtx.arc(0, 0, clipRadius, 0, sliceAngle);
+            kalCtx.clip();
+            
+            if (i % 2 === 1) {
+              kalCtx.rotate(sliceAngle);
+              kalCtx.scale(1, -1);
+            }
+            
+            kalCtx.drawImage(source, -scx, -scy);
+            kalCtx.restore();
+          }
+        }
+        kalNeedsUpdateRef.current = false;
+      }
       
       // Clear main canvas with dark background
       ctx.fillStyle = "#0f172a";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-
-      // Draw Layers
+      // Draw Depth Layers
       ctx.save();
       ctx.translate(cx, cy);
 
-      const sliceAngle = (Math.PI * 2) / segments;
-      const clipRadius = Math.hypot(canvas.width, canvas.height);
+      const numLayers = 6;
+      const timePhase = (time * zoomSpeed) % 1;
       
-      for (let i = 0; i < segments; i++) {
+      // Draw layers recursively from deep (smallest) to close (largest) 
+      for (let layer = numLayers - 1; layer >= -1; layer--) {
+        const power = layer - timePhase;
+        const scale = Math.pow(1.5, -power);
+        
         ctx.save();
-        ctx.rotate(i * sliceAngle + time * rotationSpeed);
+        ctx.scale(scale, scale);
         
-        // Clip to pie slice FIRST
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.arc(0, 0, clipRadius, 0, sliceAngle);
-        ctx.closePath();
-        ctx.clip();
-        
-        // Mirror alternating segments
-        if (i % 2 === 1) {
-          ctx.rotate(sliceAngle);
-          ctx.scale(1, -1);
+        // Fade extremes smoothly
+        if (layer === -1) {
+           ctx.globalAlpha = 1 - timePhase;
+        } else if (layer === numLayers - 1) {
+           ctx.globalAlpha = timePhase;
+        } else {
+           ctx.globalAlpha = 1;
         }
         
-        const numLayers = 6;
-        const timePhase = (time * zoomSpeed) % 1;
-        
-        // Draw layers recursively from deep (smallest) to close (largest) 
-        // to ensure smaller rings do not occlude larger strokes.
-        for (let layer = numLayers - 1; layer >= -1; layer--) {
-          const power = layer - timePhase;
-          const scale = Math.pow(1.5, -power);
-          
-          ctx.save();
-          ctx.scale(scale, scale);
-          
-          // Fade extremes smoothly
-          if (layer === -1) {
-             ctx.globalAlpha = 1 - timePhase;
-          } else if (layer === numLayers - 1) {
-             ctx.globalAlpha = timePhase;
-          } else {
-             ctx.globalAlpha = 1;
-          }
-          
-          const scx = source.width / 2;
-          const scy = source.height / 2;
-          ctx.drawImage(source, -scx, -scy);
-          ctx.restore();
-        }
+        // Single rotational phase applied identically across all scales
+        ctx.rotate(time * rotationSpeed);
+        ctx.drawImage(kalCanvas, -scx, -scy);
         ctx.restore();
       }
+      
+      ctx.restore();
 
-      // Continuous draw loop: if the pointer is pressed down but stationary, 
-      // it should draw a continuous line because the canvas is rotating underneath it.
+      // Continuous draw loop
       if (isDrawingRef.current && currentScreenPosRef.current && lastPos.current && drawModeRef.current === 'continuous' && currentStrokeIdRef.current) {
-        const timePhase = (time * zoomSpeed) % 1;
         const newPos = getMappedCoords(currentScreenPosRef.current.x, currentScreenPosRef.current.y);
         const x0 = lastPos.current.x;
         const y0 = lastPos.current.y;
@@ -318,7 +327,7 @@ export default function App() {
         // Break stroke if jumping caused by loop rollover
         if (isRollover) {
           lastPos.current = newPos;
-        } else if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05) {
+        } else if (Math.abs(dx) > 2.0 || Math.abs(dy) > 2.0) {
           const seg: DrawSegment = {
             strokeId: currentStrokeIdRef.current,
             x0, y0, x1, y1,
@@ -334,10 +343,8 @@ export default function App() {
         }
       }
 
-      const timePhase = (time * zoomSpeed) % 1;
       lastPhaseRef.current = timePhase;
       
-      ctx.restore();
       animationFrameId = requestAnimationFrame(render);
     };
 
@@ -356,15 +363,12 @@ export default function App() {
     
     ctx.clearRect(0, 0, source.width, source.height);
     
-    // Redraw in exact order
-    let drawCount = 0;
-    strokeOrderRef.current.forEach(strokeId => {
-      const segments = strokesMapRef.current.get(strokeId) || [];
-      drawCount += segments.length;
-      segments.forEach(seg => {
-        drawSegmentOnCtx(ctx, seg);
-      });
+    // Redraw in exact chronological order
+    allSegmentsRef.current.forEach(seg => {
+      drawSegmentOnCtx(ctx, seg);
     });
+    
+    kalNeedsUpdateRef.current = true;
   }, [ensureSourceCanvas]);
 
   useEffect(() => {
@@ -372,15 +376,12 @@ export default function App() {
   }, [redrawAllStrokes]);
 
   const addSegmentLocally = (seg: DrawSegment) => {
-    if (!strokesMapRef.current.has(seg.strokeId)) {
-      strokesMapRef.current.set(seg.strokeId, []);
-      strokeOrderRef.current.push(seg.strokeId);
-    }
-    strokesMapRef.current.get(seg.strokeId)!.push(seg);
+    allSegmentsRef.current.push(seg);
     
     const source = ensureSourceCanvas();
     const ctx = source.getContext("2d");
     if (ctx) drawSegmentOnCtx(ctx, seg);
+    kalNeedsUpdateRef.current = true;
   };
 
   const handleRemoteDraw = (seg: DrawSegment) => {
@@ -388,11 +389,8 @@ export default function App() {
   };
 
   const handleRemoteUndo = (strokeId: string) => {
-    if (strokesMapRef.current.has(strokeId)) {
-      strokesMapRef.current.delete(strokeId);
-      strokeOrderRef.current = strokeOrderRef.current.filter(id => id !== strokeId);
-      redrawTriggerRef.current();
-    }
+    allSegmentsRef.current = allSegmentsRef.current.filter(seg => seg.strokeId !== strokeId);
+    redrawTriggerRef.current();
   };
 
   const drawSegmentOnCtx = (ctx: CanvasRenderingContext2D, seg: DrawSegment) => {
@@ -456,10 +454,10 @@ export default function App() {
     const ctx = source.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, source.width, source.height);
-    strokesMapRef.current.clear();
-    strokeOrderRef.current = [];
+    allSegmentsRef.current = [];
     myStrokeIdsRef.current = [];
     redoStackRef.current = [];
+    kalNeedsUpdateRef.current = true;
     updateHistoryState();
   };
 
@@ -473,11 +471,10 @@ export default function App() {
   const handleUndo = () => {
     const lastMyId = myStrokeIdsRef.current.pop();
     if (lastMyId && roomId) {
-      const segments = strokesMapRef.current.get(lastMyId) || [];
-      redoStackRef.current.push({ id: lastMyId, segments });
+      const removedSegs = allSegmentsRef.current.filter(s => s.strokeId === lastMyId);
+      redoStackRef.current.push({ id: lastMyId, segments: removedSegs });
       
-      strokesMapRef.current.delete(lastMyId);
-      strokeOrderRef.current = strokeOrderRef.current.filter(id => id !== lastMyId);
+      allSegmentsRef.current = allSegmentsRef.current.filter(seg => seg.strokeId !== lastMyId);
       
       socketRef.current?.emit("undo", { roomId, strokeId: lastMyId });
       redrawTriggerRef.current();
@@ -489,8 +486,7 @@ export default function App() {
     const restoredStr = redoStackRef.current.pop();
     if (restoredStr && roomId) {
        myStrokeIdsRef.current.push(restoredStr.id);
-       strokesMapRef.current.set(restoredStr.id, restoredStr.segments);
-       strokeOrderRef.current.push(restoredStr.id);
+       allSegmentsRef.current.push(...restoredStr.segments);
        
        // Quickly re-emit all restored segments
        restoredStr.segments.forEach(seg => {
@@ -581,9 +577,9 @@ export default function App() {
   const handlePointerMove = (clientX: number, clientY: number) => {
     // Emit ghost cursor
     if (socketRef.current && roomIdRef.current) {
-      if (!lastPhaseRef.current || (Date.now() - lastPhaseRef.current > 30)) {
-        // use lastPhaseRef as throttling timer for mouse movements just to reuse ref
-        lastPhaseRef.current = Date.now(); 
+      if (!cursorThrottleRef.current || (Date.now() - cursorThrottleRef.current > 30)) {
+        // use cursorThrottleRef as throttling timer for mouse movements
+        cursorThrottleRef.current = Date.now(); 
         const mapped = getMappedCoords(clientX, clientY);
         socketRef.current.volatile.emit("cursor", { 
           roomId: roomIdRef.current, 
@@ -616,7 +612,7 @@ export default function App() {
       // Ensure snap jumps don't draw lines
       if (isRollover || dist > sourceCanvasRef.current!.width * 0.2) {
         lastPos.current = newPos;
-      } else if (dist > 0.05) {
+      } else if (dist > 2.0) {
         const seg: DrawSegment = {
           strokeId: currentStrokeIdRef.current,
           x0, y0, x1, y1,
