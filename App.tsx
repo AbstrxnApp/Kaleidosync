@@ -74,6 +74,17 @@ export default function App() {
   const strokesMapRef = useRef<Map<string, DrawSegment[]>>(new Map());
   const myStrokeIdsRef = useRef<string[]>([]);
   const redoStackRef = useRef<{ id: string, segments: DrawSegment[] }[]>([]);
+
+  const ensureSourceCanvas = useCallback(() => {
+    if (!sourceCanvasRef.current) {
+      const offscreen = document.createElement("canvas");
+      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
+      offscreen.width = D;
+      offscreen.height = D;
+      sourceCanvasRef.current = offscreen;
+    }
+    return sourceCanvasRef.current;
+  }, []);
   const currentStrokeIdRef = useRef<string | null>(null);
 
   const updateHistoryState = useCallback(() => {
@@ -154,13 +165,7 @@ export default function App() {
 
   // Setup canvas & render loop
   useEffect(() => {
-    if (!sourceCanvasRef.current) {
-      const offscreen = document.createElement("canvas");
-      const D = Math.max(window.innerWidth || 800, window.innerHeight || 600) * 2;
-      offscreen.width = D;
-      offscreen.height = D;
-      sourceCanvasRef.current = offscreen;
-    }
+    ensureSourceCanvas();
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -304,8 +309,7 @@ export default function App() {
   }, [segments, rotationSpeed, zoomSpeed]);
 
   const redrawAllStrokes = useCallback(() => {
-    const source = sourceCanvasRef.current;
-    if (!source) return;
+    const source = ensureSourceCanvas();
     const ctx = source.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, source.width, source.height);
@@ -317,7 +321,7 @@ export default function App() {
         drawSegmentOnCtx(ctx, seg);
       });
     });
-  }, []);
+  }, [ensureSourceCanvas]);
 
   useEffect(() => {
     redrawTriggerRef.current = redrawAllStrokes;
@@ -330,11 +334,9 @@ export default function App() {
     }
     strokesMapRef.current.get(seg.strokeId)!.push(seg);
     
-    const source = sourceCanvasRef.current;
-    if (source) {
-      const ctx = source.getContext("2d");
-      if (ctx) drawSegmentOnCtx(ctx, seg);
-    }
+    const source = ensureSourceCanvas();
+    const ctx = source.getContext("2d");
+    if (ctx) drawSegmentOnCtx(ctx, seg);
   };
 
   const handleRemoteDraw = (seg: DrawSegment) => {
@@ -406,8 +408,7 @@ export default function App() {
   };
 
   const clearSource = () => {
-    const source = sourceCanvasRef.current;
-    if (!source) return;
+    const source = ensureSourceCanvas();
     const ctx = source.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, source.width, source.height);
