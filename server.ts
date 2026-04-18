@@ -16,18 +16,6 @@ async function startServer() {
   // In-memory storage for room canvas state
   const roomsState = new Map<string, { strokeOrder: string[], strokes: Record<string, any[]> }>();
 
-  // Expose backend memory state for debug verification
-  app.get("/api/debug-state", (req, res) => {
-    const stateObj: any = {};
-    for (const [key, val] of roomsState.entries()) {
-      stateObj[key] = {
-        strokeCount: val.strokeOrder.length,
-        points: Object.values(val.strokes).reduce((acc, curr) => acc + curr.length, 0)
-      };
-    }
-    res.json({ rooms: stateObj });
-  });
-
   // Real-time synchronization
   io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);

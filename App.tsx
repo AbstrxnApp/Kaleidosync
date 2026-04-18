@@ -788,7 +788,7 @@ export default function App() {
 
       {/* UI Overlay */}
       {!showSplash && isMenuOpen && (
-        <div className="absolute z-40 top-6 left-6 bottom-6 md:bottom-auto max-h-[calc(100dvh-48px)] w-[calc(100%-48px)] md:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto hide-scrollbar">
+        <div className="absolute z-40 top-4 left-4 sm:top-6 sm:left-6 bottom-4 sm:bottom-auto max-h-[calc(100dvh-32px)] sm:max-h-[calc(100dvh-48px)] w-[calc(100%-32px)] sm:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto hide-scrollbar">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between pointer-events-auto">
             <h1 className="text-xl font-medium tracking-tighter text-white">
