@@ -25,7 +25,6 @@ export default function App() {
   const [isCopied, setIsCopied] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(window.innerWidth > 768);
   const [cursors, setCursors] = useState<Record<string, { x: number, y: number, color: string, effect: string, ts: number }>>({});
-  const [syncMetric, setSyncMetric] = useState(0);
 
   // Hoist redraw so it can be safely triggered by async sockets AND resize observers identically
   const redrawTriggerRef = useRef<() => void>(() => {});
@@ -122,20 +121,31 @@ export default function App() {
         sourceCanvasRef.current = offscreen;
       }
       
-      const source = sourceCanvasRef.current;
-      const ctx = source.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, source.width, source.height);
-        strokeOrderRef.current.forEach(strokeId => {
-          const segments = strokesMapRef.current.get(strokeId) || [];
-          segments.forEach(seg => {
-            drawSegmentOnCtx(ctx, seg);
+      const performRedraw = () => {
+        const source = sourceCanvasRef.current;
+        if (!source) return;
+        const ctx = source.getContext("2d", { willReadFrequently: true });
+        let totalSegs = 0;
+        if (ctx) {
+          ctx.clearRect(0, 0, source.width, source.height);
+          strokeOrderRef.current.forEach(strokeId => {
+            const segments = strokesMapRef.current.get(strokeId) || [];
+            totalSegs += segments.length;
+            segments.forEach(seg => {
+              drawSegmentOnCtx(ctx, seg);
+            });
           });
-        });
-      }
+        }
+      };
+
+      // Perform immediately
+      performRedraw();
+      
+      // Perform again after 500ms and 1500ms to guarantee any DOM/Render layout race conditions are forcefully crushed natively
+      setTimeout(performRedraw, 500);
+      setTimeout(performRedraw, 1500);
       
       redrawTriggerRef.current(); // Just in case it existed
-      setSyncMetric(data.strokeOrder.length);
     });
 
     socket.on("draw", (data: DrawSegment) => {
@@ -344,10 +354,6 @@ export default function App() {
     const ctx = source.getContext("2d");
     if (!ctx) return;
     
-    console.log("🛠️ redrawAllStrokes Executing!");
-    console.log("Memory Array Lengths: ", strokeOrderRef.current.length, "strokes");
-    console.log("Canvas Size:", source.width, source.height);
-
     ctx.clearRect(0, 0, source.width, source.height);
     
     // Redraw in exact order
@@ -359,7 +365,6 @@ export default function App() {
         drawSegmentOnCtx(ctx, seg);
       });
     });
-    console.log("🛠️ redrawAllStrokes Finished Drawing,", drawCount, "total segments.");
   }, [ensureSourceCanvas]);
 
   useEffect(() => {
@@ -783,7 +788,7 @@ export default function App() {
 
       {/* UI Overlay */}
       {!showSplash && isMenuOpen && (
-        <div className="absolute z-40 top-6 left-6 bottom-6 md:bottom-auto w-[calc(100%-48px)] md:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto">
+        <div className="absolute z-40 top-6 left-6 bottom-6 md:bottom-auto max-h-[calc(100dvh-48px)] w-[calc(100%-48px)] md:w-auto overflow-y-auto bg-[#0a0a0a]/90 backdrop-blur-xl p-5 rounded-2xl border border-neutral-800 shadow-2xl flex flex-col gap-6 max-w-[280px] pointer-events-auto hide-scrollbar">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between pointer-events-auto">
             <h1 className="text-xl font-medium tracking-tighter text-white">
@@ -984,19 +989,6 @@ export default function App() {
         </div>
       </div>
       )}
-
-      {/* Debug Overlay */}
-      <div className="absolute top-2 right-2 flex flex-col gap-2 z-50">
-        <div className="text-[10px] font-mono text-neutral-500 bg-black/50 p-2 rounded pointer-events-none">
-          Sync: {syncMetric} strokes | Size: {Object.keys(cursors).length} cursors
-        </div>
-        <button 
-          onClick={() => redrawTriggerRef.current()}
-          className="bg-black/50 hover:bg-neutral-800 text-neutral-400 text-[10px] py-1 px-2 rounded border border-neutral-700"
-        >
-          Force Redraw From Memory
-        </button>
-      </div>
     </div>
   );
 }
