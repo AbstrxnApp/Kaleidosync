@@ -691,7 +691,7 @@ export default function App() {
   };
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans text-neutral-100">
+    <div className="relative w-screen h-screen overflow-hidden bg-[#050505] font-sans text-neutral-100"> 
       <canvas
         ref={canvasRef}
         className="absolute inset-0 cursor-crosshair touch-none"
