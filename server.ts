@@ -14,7 +14,7 @@ async function startServer() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // In-memory storage for room canvas state
-  const roomsState = new Map<string, { strokeOrder: string[], strokes: Record<string, any[]> }>();
+  const roomsState = new Map<string, { segments: any[] }>();
 
   // Real-time synchronization
   io.on("connection", (socket) => {
@@ -26,7 +26,7 @@ async function startServer() {
       
       // Send existing canvas state to the newly joined client
       if (roomsState.has(roomId)) {
-        console.log(`Sending sync to ${socket.id} for ${roomId}. Strokes: ${roomsState.get(roomId)!.strokeOrder.length}`);
+        console.log(`Sending sync to ${socket.id} for ${roomId}. Segments: ${roomsState.get(roomId)!.segments.length}`);
         socket.emit("sync", roomsState.get(roomId));
       } else {
         console.log(`No history available yet for room ${roomId}`);
@@ -40,14 +40,10 @@ async function startServer() {
     socket.on("draw", (data) => {
       // Save state
       if (!roomsState.has(data.roomId)) {
-        roomsState.set(data.roomId, { strokeOrder: [], strokes: {} });
+        roomsState.set(data.roomId, { segments: [] });
       }
       const roomState = roomsState.get(data.roomId)!;
-      if (!roomState.strokes[data.strokeId]) {
-        roomState.strokes[data.strokeId] = [];
-        roomState.strokeOrder.push(data.strokeId);
-      }
-      roomState.strokes[data.strokeId].push(data);
+      roomState.segments.push(data);
 
       // Broadcast to other clients in the same room
       socket.to(data.roomId).emit("draw", data);
@@ -61,8 +57,7 @@ async function startServer() {
       // Remove from server state
       const roomState = roomsState.get(data.roomId);
       if (roomState) {
-        delete roomState.strokes[data.strokeId];
-        roomState.strokeOrder = roomState.strokeOrder.filter(id => id !== data.strokeId);
+        roomState.segments = roomState.segments.filter((s: any) => s.strokeId !== data.strokeId);
       }
       socket.to(data.roomId).emit("undo", data);
     });
